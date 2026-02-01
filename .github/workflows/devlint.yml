@@ -1,0 +1,94 @@
+name: DevLint Check
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+jobs:
+  devlint:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper PR checks
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install DevLint
+        run: |
+          pip install git+https://github.com/MayankRajeevkumarShukla/devlint.git
+      
+      - name: Run DevLint - Secret Scan
+        id: secrets
+        run: |
+          # Stage all files for secret scanning
+          git add -A
+          
+          # Run secret scan and capture exit code
+          if devlint secrets; then
+            echo "secrets_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "secrets_passed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Run DevLint - PR Safety Check
+        if: github.event_name == 'pull_request'
+        id: pr_check
+        run: |
+          # Get the branch name
+          BRANCH_NAME="${{ github.head_ref }}"
+          
+          # Run PR check
+          if devlint check-pr "$BRANCH_NAME"; then
+            echo "pr_check_passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "pr_check_passed=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request' && failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `## 🚨 DevLint Check Failed
+            
+            **Secret Scan:** ${{ steps.secrets.outputs.secrets_passed == 'true' && '✅ Passed' || '❌ Failed - Secrets detected!' }}
+            **PR Safety:** ${{ steps.pr_check.outputs.pr_check_passed == 'true' && '✅ Passed' || '⚠️ Warning - Review needed' }}
+            
+            ### ⚠️ Action Required
+            
+            Secrets were detected in your code. Please:
+            1. Remove all secrets from your code
+            2. Use environment variables instead
+            3. Add sensitive files to \`.gitignore\`
+            4. Run \`devlint secrets\` locally to check
+            
+            **DO NOT MERGE until secrets are removed!**
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+      
+      - name: Fail if secrets found
+        if: steps.secrets.outputs.secrets_passed == 'false'
+        run: |
+          echo "❌ Secrets detected! Blocking merge."
+          exit 1
