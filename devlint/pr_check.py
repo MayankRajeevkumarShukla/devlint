@@ -2,6 +2,29 @@ import git
 from colorama import Fore, Style
 import click
 
+def get_default_branch(repo):
+    """Detect the default branch (main, master, develop, etc.)"""
+    try:
+        # Try common branch names
+        for branch in ['main', 'master', 'develop', 'dev']:
+            try:
+                repo.git.rev_parse(f'origin/{branch}')
+                return branch
+            except:
+                continue
+        
+        # If none found, try to get remote HEAD
+        try:
+            remote_head = repo.git.symbolic_ref('refs/remotes/origin/HEAD')
+            return remote_head.split('/')[-1]
+        except:
+            pass
+        
+        # Fallback to main
+        return 'main'
+    except:
+        return 'main'
+
 def check_pr_safety(branch=None):
     """Check PR safety - commits behind, conflicts, and who modified files."""
     try:
@@ -13,14 +36,17 @@ def check_pr_safety(branch=None):
         else:
             current_branch = branch
         
+        # Detect default branch
+        default_branch = get_default_branch(repo)
+        
         click.echo(f"Branch: {Fore.YELLOW}{current_branch}{Style.RESET_ALL}")
-        click.echo(f"Target: {Fore.YELLOW}main{Style.RESET_ALL}\n")
+        click.echo(f"Target: {Fore.YELLOW}{default_branch}{Style.RESET_ALL}\n")
         
         # 1. Check commits behind
-        commits_behind = check_commits_behind(repo, current_branch)
+        commits_behind = check_commits_behind(repo, current_branch, default_branch)
         
         # 2. Check for conflicts
-        has_conflicts = check_merge_conflicts(repo, current_branch)
+        has_conflicts = check_merge_conflicts(repo, current_branch, default_branch)
         
         # 3. Calculate risk level
         risk_level = calculate_risk(commits_behind, has_conflicts)
@@ -33,20 +59,20 @@ def check_pr_safety(branch=None):
     except Exception as e:
         click.echo(f"{Fore.RED}❌ Error: {str(e)}{Style.RESET_ALL}")
 
-def check_commits_behind(repo, branch):
-    """Check how many commits behind main."""
+def check_commits_behind(repo, branch, default_branch):
+    """Check how many commits behind default branch."""
     try:
         # Fetch latest
         repo.remotes.origin.fetch()
         
         # Count commits
-        commits = repo.git.rev_list('--count', f'{branch}..origin/main')
+        commits = repo.git.rev_list('--count', f'{branch}..origin/{default_branch}')
         commits_behind = int(commits)
         
         if commits_behind == 0:
             click.echo(f"{Fore.GREEN}✅ Up to date (0 commits behind){Style.RESET_ALL}")
         else:
-            click.echo(f"{Fore.RED}❌ {commits_behind} commits behind main{Style.RESET_ALL}")
+            click.echo(f"{Fore.RED}❌ {commits_behind} commits behind {default_branch}{Style.RESET_ALL}")
         
         return commits_behind
         
@@ -54,14 +80,14 @@ def check_commits_behind(repo, branch):
         click.echo(f"{Fore.YELLOW}⚠️  Could not check commits behind: {str(e)}{Style.RESET_ALL}")
         return 0
 
-def check_merge_conflicts(repo, branch):
+def check_merge_conflicts(repo, branch, default_branch):
     """Predict merge conflicts using git merge-tree."""
     try:
         # Find merge base
-        merge_base = repo.git.merge_base(branch, 'origin/main')
+        merge_base = repo.git.merge_base(branch, f'origin/{default_branch}')
         
         # Simulate merge
-        merge_output = repo.git.merge_tree(merge_base, branch, 'origin/main')
+        merge_output = repo.git.merge_tree(merge_base, branch, f'origin/{default_branch}')
         
         # Check for conflict markers
         has_conflicts = '<<<<<<<' in merge_output
@@ -98,4 +124,4 @@ def show_recommendation(risk_level):
         click.echo(f"Recommendation: {Fore.YELLOW}Review carefully before merging{Style.RESET_ALL}")
     else:
         click.echo(f"Risk Level: {Fore.RED}{risk_level} 🔴{Style.RESET_ALL}")
-        click.echo(f"Recommendation: {Fore.RED}Sync with main before merging{Style.RESET_ALL}")
+        click.echo(f"Recommendation: {Fore.RED}Sync with {default_branch} before merging{Style.RESET_ALL}")
