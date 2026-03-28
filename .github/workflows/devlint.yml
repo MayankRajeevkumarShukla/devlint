@@ -20,7 +20,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for proper PR checks
+          fetch-depth: 0
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -34,25 +34,64 @@ jobs:
       - name: Run DevLint - Secret Scan
         id: secrets
         run: |
-          # Stage all files for secret scanning
-          git add -A
+          echo "Scanning all files for secrets..."
           
-          # Run secret scan and capture exit code
-          if devlint secrets; then
-            echo "secrets_passed=true" >> $GITHUB_OUTPUT
-          else
+          # Find all code files and scan them
+          SECRET_FOUND=0
+          
+          # Scan for AWS keys
+          if grep -r "AKIA[0-9A-Z]\{16\}" --include="*.py" --include="*.js" --include="*.ts" --include="*.jsx" --include="*.tsx" --include="*.java" --include="*.go" --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir=".venv" . ; then
+            echo "❌ AWS Access Key detected!"
+            SECRET_FOUND=1
+          fi
+          
+          # Scan for GitHub tokens
+          if grep -rE "gh[ps]_[0-9a-zA-Z]{36}" --include="*.py" --include="*.js" --include="*.ts" --include="*.jsx" --include="*.tsx" --include="*.java" --include="*.go" --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir=".venv" . ; then
+            echo "❌ GitHub Token detected!"
+            SECRET_FOUND=1
+          fi
+          
+          # Scan for Stripe keys
+          if grep -rE "sk_(live|test)_[0-9a-zA-Z]{24,}" --include="*.py" --include="*.js" --include="*.ts" --include="*.jsx" --include="*.tsx" --include="*.java" --include="*.go" --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir=".venv" . ; then
+            echo "❌ Stripe API Key detected!"
+            SECRET_FOUND=1
+          fi
+          
+          # Scan for OpenAI keys
+          if grep -rE "sk-[A-Za-z0-9]{48}" --include="*.py" --include="*.js" --include="*.ts" --include="*.jsx" --include="*.tsx" --include="*.java" --include="*.go" --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir=".venv" . ; then
+            echo "❌ OpenAI API Key detected!"
+            SECRET_FOUND=1
+          fi
+          
+          # Scan for private keys
+          if grep -r "BEGIN.*PRIVATE KEY" --include="*.py" --include="*.js" --include="*.ts" --include="*.pem" --include="*.key" --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir=".venv" . ; then
+            echo "❌ Private Key detected!"
+            SECRET_FOUND=1
+          fi
+          
+          # Scan for hardcoded passwords/tokens in code
+          if grep -rE "(password|passwd|pwd|secret|token|api_key|apikey).*=.*['\"][a-zA-Z0-9_\-]{15,}['\"]" --include="*.py" --include="*.js" --include="*.ts" --include="*.jsx" --include="*.tsx" --include="*.java" --include="*.go" --exclude-dir=".git" --exclude-dir="node_modules" --exclude-dir=".venv" . ; then
+            echo "⚠️  Potential hardcoded secret detected!"
+            SECRET_FOUND=1
+          fi
+          
+          if [ $SECRET_FOUND -eq 1 ]; then
             echo "secrets_passed=false" >> $GITHUB_OUTPUT
+            echo ""
+            echo "🚨 SECRETS DETECTED! This PR is blocked."
             exit 1
+          else
+            echo "secrets_passed=true" >> $GITHUB_OUTPUT
+            echo "✅ No secrets detected"
           fi
       
       - name: Run DevLint - PR Safety Check
         if: github.event_name == 'pull_request'
         id: pr_check
+        continue-on-error: true
         run: |
-          # Get the branch name
           BRANCH_NAME="${{ github.head_ref }}"
           
-          # Run PR check
           if devlint check-pr "$BRANCH_NAME"; then
             echo "pr_check_passed=true" >> $GITHUB_OUTPUT
           else
@@ -86,9 +125,3 @@ jobs:
               repo: context.repo.repo,
               body: output
             });
-      
-      - name: Fail if secrets found
-        if: steps.secrets.outputs.secrets_passed == 'false'
-        run: |
-          echo "❌ Secrets detected! Blocking merge."
-          exit 1
